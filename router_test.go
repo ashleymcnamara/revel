@@ -291,24 +291,24 @@ func TestComputeRoute(t *testing.T) {
 
 const TEST_ROUTES = `
 # This is a comment
-GET www.example.com               /                          Host.Index
-GET *.example.com                 /                          Host.Wildcard
-GET {<.+>subdomain}.example.com   /sdregex                   Host.SubdomainRegex
-GET {subdomain}.foo.com           /subdomain                 Host.Subdomain
-GET {subdomain}.{domain}          /dandsd                    Host.DomainAndSubdomain
-GET {<[^.]+>subdomain}.{<.+>domain} /dandsdregex             Host.DomainAndSubdomain2
-GET {<[^.]+>subdomain}.{domain}   /dandsdregex2              Host.DomainAndSubdomain3
-GET {<.+>domain}                  /dregex                    Host.DomainRegex
-GET {domain}                      /domain                    Host.Domain
-GET                               /                          Application.Index
-GET                               /app/{id}/?                Application.Show
-POST                              /app/{id}                  Application.Save
-PATCH                             /app/{id}/?                Application.Update
-GET                               /javascript/{<.+>filepath} Static.Serve("public/js")
-GET                               /public/{<.+>filepath}     Static.Serve("public")
-*                                 /{controller}/{action}		 {controller}.{action}
+GET www.example.com                 /                          Host.Index
+GET *.example.com                   /                          Host.Wildcard
+GET {<.+>subdomain}.example.com     /sdregex                   Host.SubdomainRegex
+GET {subdomain}.foo.com             /subdomain                 Host.Subdomain
+GET {subdomain}.{domain}            /dandsd                    Host.DomainAndSubdomain
+GET {<[^.]+>subdomain}.{<.+>domain} /dandsdregex               Host.DomainAndSubdomain2
+GET {<[^.]+>subdomain}.{domain}     /dandsdregex2              Host.DomainAndSubdomain3
+GET {<.+>domain}                    /dregex                    Host.DomainRegex
+GET {domain}                        /domain                    Host.Domain
+GET                                 /                          Application.Index
+GET                                 /app/{id}/?                Application.Show
+POST                                /app/{id}                  Application.Save
+PATCH                               /app/{id}/?                Application.Update
+GET                                 /javascript/{<.+>filepath} Static.Serve("public/js")
+GET                                 /public/{<.+>filepath}     Static.Serve("public")
+*                                   /{controller}/{action}		 {controller}.{action}
 
-GET                               /favicon.ico               404
+GET                                 /favicon.ico               404
 `
 
 var routeMatchTestCases = map[*http.Request]*RouteMatch{

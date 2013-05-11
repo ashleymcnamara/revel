@@ -145,7 +145,6 @@ func NewRoute(method, host, path, action, fixedArgs string) (r *Route) {
 		}
 	}
 	r.actionPattern = regexp.MustCompile(actionPatternStr)
-	fmt.Println(actionPatternStr)
 	return
 }
 
