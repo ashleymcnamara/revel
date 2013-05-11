@@ -12,11 +12,13 @@ import (
 )
 
 type Route struct {
+	Host        string   // e.g. www.example.com
 	Method      string   // e.g. GET
 	Path        string   // e.g. /app/{id}
 	Action      string   // e.g. Application.ShowApp
 	FixedParams []string // e.g. "arg1","arg2","arg3" (CSV formatting)
 
+	hostPattern   *regexp.Regexp // for matching the host
 	pathPattern   *regexp.Regexp // for matching the url path
 	args          []*arg         // e.g. {id} from path /app/{id}
 	actionPattern *regexp.Regexp
@@ -32,17 +34,17 @@ type RouteMatch struct {
 
 type arg struct {
 	name       string
-	index      int
 	constraint *regexp.Regexp
 }
 
 var (
 	nakedPathParamRegex = regexp.MustCompile(`\{([a-zA-Z_][a-zA-Z_0-9]*)\}`)
 	argsPattern         = regexp.MustCompile(`\{<(?P<pattern>[^>]+)>(?P<var>[a-zA-Z_0-9]+)\}`)
+	hostArgsPattern     = regexp.MustCompile(`\{<(?P<pattern>[^>]+)>(?P<var>[a-zA-Z_0-9]+)\}`)
 )
 
 // Prepares the route to be used in matching.
-func NewRoute(method, path, action, fixedArgs string) (r *Route) {
+func NewRoute(method, host, path, action, fixedArgs string) (r *Route) {
 	// Handle fixed arguments
 	argsReader := strings.NewReader(fixedArgs)
 	csv := csv.NewReader(argsReader)
@@ -53,6 +55,7 @@ func NewRoute(method, path, action, fixedArgs string) (r *Route) {
 
 	r = &Route{
 		Method:      strings.ToUpper(method),
+		Host:        host,
 		Path:        path,
 		Action:      action,
 		FixedParams: fargs,
@@ -61,11 +64,53 @@ func NewRoute(method, path, action, fixedArgs string) (r *Route) {
 	// URL pattern
 	// TODO: Support non-absolute paths
 	if !strings.HasPrefix(r.Path, "/") {
-		ERROR.Print("Absolute URL required.")
+		ERROR.Print("Absolute URL required. ", r.Path)
 		return
 	}
 
 	// Handle embedded arguments
+	r.args = make([]*arg, 0, 3)
+
+	// Convert wildcard to regex
+	normHost := r.Host
+
+	if r.Host == "*" {
+		normHost = ".+"
+	} else {
+		// TODO: when we only have {domain} it doesn't match the "."
+
+		// Convert host arguments with unspecified regexes to standard form.
+		normHost = nakedPathParamRegex.ReplaceAllStringFunc(normHost, func(m string) string {
+			var argMatches []string = nakedPathParamRegex.FindStringSubmatch(m)
+			return "{<[^.]+>" + argMatches[1] + "}"
+		})
+
+		// We need to escape "." here, we escape all of them because at this point we don't
+		// know which portion is a regex, and which is just the url, we'll unescape the regexp
+		// portions as we iterate over the args matches. (may be another way to do this later)
+		normHost = strings.Replace(normHost, ".", "\\.", -1)
+
+		for _, m := range hostArgsPattern.FindAllStringSubmatch(normHost, -1) {
+			r.args = append(r.args, &arg{
+				name:       string(m[2]),
+				constraint: regexp.MustCompile(strings.Replace(string(m[1]), "\\.", ".", -1)),
+			})
+		}
+
+		// Account for *.example.com
+		if strings.HasPrefix(normHost, "*\\.") {
+			normHost = ".+" + normHost[1:]
+		}
+	}
+
+	// Now assemble the entire path regex, including the embedded parameters.
+	// e.g. /app/{<[^/]+>id} => /app/(?P<id>[^/]+)
+	hostPatternStr := hostArgsPattern.ReplaceAllStringFunc(normHost, func(m string) string {
+		var argMatches []string = hostArgsPattern.FindStringSubmatch(m)
+		return "(?P<" + argMatches[2] + ">" + strings.Replace(argMatches[1], "\\.", ".", -1) + ")"
+	})
+
+	r.hostPattern = regexp.MustCompile("^" + hostPatternStr + "$")
 
 	// Convert path arguments with unspecified regexes to standard form.
 	// e.g. "/customer/{id}" => "/customer/{<[^/]+>id}
@@ -75,11 +120,9 @@ func NewRoute(method, path, action, fixedArgs string) (r *Route) {
 	})
 
 	// Go through the arguments
-	r.args = make([]*arg, 0, 3)
-	for i, m := range argsPattern.FindAllStringSubmatch(normPath, -1) {
+	for _, m := range argsPattern.FindAllStringSubmatch(normPath, -1) {
 		r.args = append(r.args, &arg{
 			name:       string(m[2]),
-			index:      i,
 			constraint: regexp.MustCompile(string(m[1])),
 		})
 	}
@@ -102,14 +145,33 @@ func NewRoute(method, path, action, fixedArgs string) (r *Route) {
 		}
 	}
 	r.actionPattern = regexp.MustCompile(actionPatternStr)
+	fmt.Println(actionPatternStr)
 	return
 }
 
 // Return nil if no match.
-func (r *Route) Match(method string, reqPath string) *RouteMatch {
+func (r *Route) Match(method, host, reqPath string) *RouteMatch {
 	// Check the Method
 	if r.Method != "*" && method != r.Method && !(method == "HEAD" && r.Method == "GET") {
 		return nil
+	}
+
+	params := make(map[string]string)
+
+	// Check the Host
+	if r.Host != "*" {
+		if !r.hostPattern.MatchString(host) {
+			return nil
+		}
+
+		matches := r.hostPattern.FindStringSubmatch(host)
+		if len(matches) == 0 || len(matches[0]) != len(host) {
+			return nil
+		}
+
+		for i, m := range matches[1:] {
+			params[r.hostPattern.SubexpNames()[i+1]] = m
+		}
 	}
 
 	// Check the Path
@@ -119,7 +181,6 @@ func (r *Route) Match(method string, reqPath string) *RouteMatch {
 	}
 
 	// Figure out the Param names.
-	params := make(map[string]string)
 	for i, m := range matches[1:] {
 		params[r.pathPattern.SubexpNames()[i+1]] = m
 	}
@@ -162,7 +223,7 @@ type Router struct {
 
 func (router *Router) Route(req *http.Request) *RouteMatch {
 	for _, route := range router.Routes {
-		if m := route.Match(req.Method, req.URL.Path); m != nil {
+		if m := route.Match(req.Method, req.Host, req.URL.Path); m != nil {
 			return m
 		}
 	}
@@ -195,12 +256,12 @@ func (router *Router) parse(content string, validate bool) *Error {
 			continue
 		}
 
-		method, path, action, fixedArgs, found := parseRouteLine(line)
+		method, host, path, action, fixedArgs, found := parseRouteLine(line)
 		if !found {
 			continue
 		}
 
-		route := NewRoute(method, path, action, fixedArgs)
+		route := NewRoute(method, host, path, action, fixedArgs)
 		routes = append(routes, route)
 
 		if validate {
@@ -259,21 +320,31 @@ func (router *Router) validate(route *Route) *Error {
 
 // Groups:
 // 1: method
-// 4: path
-// 5: action
-// 6: fixedargs
+// 2: host
+// 3: path
+// 4: action
+// 5: fixedargs
 var routePattern *regexp.Regexp = regexp.MustCompile(
 	"(?i)^(GET|POST|PUT|DELETE|PATCH|OPTIONS|HEAD|WS|\\*)" +
-		"[(]?([^)]*)(\\))?[ \t]+" +
-		"(.*/[^ \t]*)[ \t]+([^ \t(]+)" +
-		`\(?([^)]*)\)?[ \t]*$`)
+		"\\s+" + // whitespace
+		"([^\\s/]+)?" + // host
+		"(?:\\s+)?" + // whitespace
+		"(/[^\\s]*)" + // path
+		"\\s+" + // whitespace
+		"([^\\s(]+)" + // action
+		"\\(?([^)]*)\\)?\\s*$") //fixedArgs
 
-func parseRouteLine(line string) (method, path, action, fixedArgs string, found bool) {
+func parseRouteLine(line string) (method, host, path, action, fixedArgs string, found bool) {
 	var matches []string = routePattern.FindStringSubmatch(line)
 	if matches == nil {
 		return
 	}
-	method, path, action, fixedArgs = matches[1], matches[4], matches[5], matches[6]
+	method, host, path, action, fixedArgs = matches[1], matches[2], matches[3], matches[4], matches[5]
+
+	if host == "" {
+		host = "*"
+	}
+
 	found = true
 	return
 }
